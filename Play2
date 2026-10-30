@@ -1,0 +1,111 @@
+
+---
+- name: Audit Brotli CVE-2026-111497 across hosts and containers
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    brotli_audit_script: |
+      echo "========== OS INFORMATION =========="
+      cat /etc/os-release 2>/dev/null | grep -E '^(ID|VERSION_ID)=' || true
+
+      echo
+      echo "========== OS BROTLI PACKAGES =========="
+
+      if command -v dpkg-query >/dev/null 2>&1; then
+        dpkg-query -W -f='${binary:Package} ${Version}\n' 2>/dev/null | grep -i brotli || echo "No Brotli OS packages found"
+      elif command -v rpm >/dev/null 2>&1; then
+        rpm -qa 2>/dev/null | grep -i brotli || echo "No Brotli OS packages found"
+      elif command -v apk >/dev/null 2>&1; then
+        apk info -v 2>/dev/null | grep -i brotli || echo "No Brotli OS packages found"
+      else
+        echo "No supported package manager found"
+      fi
+
+      echo
+      echo "========== PYTHON BROTLI PACKAGES =========="
+
+      for py in python3 python; do
+        if command -v "$py" >/dev/null 2>&1; then
+          echo "--- $py ---"
+          "$py" -m pip show Brotli brotlicffi 2>/dev/null || true
+        fi
+      done
+
+      echo
+      echo "========== NODE.JS =========="
+
+      if command -v node >/dev/null 2>&1; then
+        node --version
+        node -p '"Node executable: " + process.execPath'
+      else
+        echo "Node.js not found in PATH"
+      fi
+
+      echo
+      echo "========== BUN =========="
+
+      if command -v bun >/dev/null 2>&1; then
+        bun --version
+      else
+        echo "Bun not found in PATH"
+      fi
+
+      echo
+      echo "========== .NET =========="
+
+      if command -v dotnet >/dev/null 2>&1; then
+        dotnet --list-runtimes 2>/dev/null
+      else
+        echo ".NET not found in PATH"
+      fi
+
+      echo
+      echo "========== ENVOY =========="
+
+      if command -v envoy >/dev/null 2>&1; then
+        envoy --version 2>&1 | head -5
+      else
+        echo "Envoy not found in PATH"
+      fi
+
+  tasks:
+
+    - name: Audit host
+      ansible.builtin.shell: "{{ brotli_audit_script }}"
+      register: host_audit
+      changed_when: false
+      failed_when: false
+
+    - name: Display host audit
+      ansible.builtin.debug:
+        msg: |
+          =========================================
+          HOST: {{ inventory_hostname }}
+          =========================================
+          {{ host_audit.stdout }}
+
+    - name: Get running Docker containers
+      ansible.builtin.command: docker ps -q
+      register: docker_containers
+      changed_when: false
+      failed_when: false
+
+    - name: Audit running Docker containers
+      ansible.builtin.shell: >
+        docker exec {{ item }} sh -c {{ brotli_audit_script | quote }}
+      loop: "{{ docker_containers.stdout_lines | default([]) }}"
+      register: container_audit
+      changed_when: false
+      failed_when: false
+
+    - name: Display container audit
+      ansible.builtin.debug:
+        msg: |
+          =========================================
+          HOST: {{ inventory_hostname }}
+          CONTAINER: {{ item.item }}
+          =========================================
+          {{ item.stdout | default(item.stderr | default('No output')) }}
+      loop: "{{ container_audit.results | default([]) }}"
