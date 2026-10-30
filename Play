@@ -1,0 +1,55 @@
+
+---
+- name: Scan for Brotli library
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: Gather installed packages on host
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Report Brotli status on host
+      ansible.builtin.debug:
+        msg: "HOST {{ inventory_hostname }}: libbrotli0 INSTALLED - {{ ansible_facts.packages['libbrotli0'] | map(attribute='version') | list }}"
+      when: "'libbrotli0' in ansible_facts.packages"
+
+    - name: Report if Brotli is missing on host
+      ansible.builtin.debug:
+        msg: "HOST {{ inventory_hostname }}: libbrotli0 NOT FOUND"
+      when: "'libbrotli0' not in ansible_facts.packages"
+
+    - name: Get running Docker containers
+      ansible.builtin.command: docker ps -q
+      register: docker_containers
+      changed_when: false
+      failed_when: false
+
+    - name: Check Brotli inside Docker containers
+      ansible.builtin.shell: |
+        docker exec {{ item }} sh -c '
+        if command -v dpkg-query >/dev/null 2>&1; then
+          dpkg-query -W -f="${Package} ${Version}\n" libbrotli0 2>/dev/null
+        elif command -v rpm >/dev/null 2>&1; then
+          rpm -q libbrotli 2>/dev/null
+        elif command -v apk >/dev/null 2>&1; then
+          apk info -v libbrotli 2>/dev/null
+        else
+          echo "Package manager not found"
+        fi
+        '
+      loop: "{{ docker_containers.stdout_lines | default([]) }}"
+      register: docker_brotli
+      changed_when: false
+      failed_when: false
+
+    - name: Report Docker Brotli status
+      ansible.builtin.debug:
+        msg: >-
+          HOST {{ inventory_hostname }},
+          CONTAINER {{ item.item }}:
+          {{ item.stdout if item.rc == 0 and item.stdout | length > 0
+             else 'Brotli package NOT FOUND or package manager unavailable' }}
+      loop: "{{ docker_brotli.results | default([]) }}"
