@@ -1,0 +1,168 @@
+
+---
+- name: Scan hosts and Docker containers for Brotli packages
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+
+    brotli_scan_script: |
+      echo "========== OS INFORMATION =========="
+      cat /etc/os-release 2>/dev/null | grep -E '^(ID|VERSION_ID)=' || true
+
+      echo
+      echo "========== BROTLI OS PACKAGES =========="
+
+      if command -v dpkg-query >/dev/null 2>&1; then
+
+        for pkg in libbrotli0 libbrotli1 python3-brotli python3-brotlicffi; do
+          result=$(dpkg-query -W -f='${binary:Package} ${Version}' "$pkg" 2>/dev/null)
+          if [ -n "$result" ]; then
+            echo "INSTALLED: $result"
+          else
+            echo "NOT FOUND: $pkg"
+          fi
+        done
+
+      elif command -v rpm >/dev/null 2>&1; then
+        rpm -qa 2>/dev/null | grep -i brotli || echo "No Brotli RPM packages found"
+
+      elif command -v apk >/dev/null 2>&1; then
+        apk info -v 2>/dev/null | grep -i brotli || echo "No Brotli APK packages found"
+
+      else
+        echo "No supported package manager found"
+      fi
+
+      echo
+      echo "========== PYTHON BROTLI PACKAGES =========="
+
+      for py in python3 python; do
+        if command -v "$py" >/dev/null 2>&1; then
+          echo "--- $py ---"
+          "$py" -m pip show Brotli brotlicffi 2>/dev/null || true
+        fi
+      done
+
+      echo
+      echo "========== NODE.JS VERSION =========="
+
+      if command -v node >/dev/null 2>&1; then
+        node --version
+      else
+        echo "Node.js not found"
+      fi
+
+      echo
+      echo "========== BUN VERSION =========="
+
+      if command -v bun >/dev/null 2>&1; then
+        bun --version
+      else
+        echo "Bun not found"
+      fi
+
+      echo
+      echo "========== DOTNET RUNTIMES =========="
+
+      if command -v dotnet >/dev/null 2>&1; then
+        dotnet --list-runtimes 2>/dev/null || true
+      else
+        echo ".NET not found"
+      fi
+
+  tasks:
+
+    # ------------------------------------------------
+    # HOST SCAN
+    # ------------------------------------------------
+
+    - name: Scan Brotli packages on host
+      ansible.builtin.shell: "{{ brotli_scan_script }}"
+      register: host_brotli_scan
+      changed_when: false
+      failed_when: false
+
+    - name: Display host scan results
+      ansible.builtin.debug:
+        msg: |
+          ==========================================
+          HOST: {{ inventory_hostname }}
+          ==========================================
+          {{ host_brotli_scan.stdout | default('No output') }}
+
+    # ------------------------------------------------
+    # DOCKER AVAILABILITY
+    # ------------------------------------------------
+
+    - name: Check Docker availability
+      ansible.builtin.command: docker info
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Report Docker unavailable
+      ansible.builtin.debug:
+        msg: "Docker unavailable on {{ inventory_hostname }}. Skipping container scan."
+      when: docker_check.rc != 0
+
+    # ------------------------------------------------
+    # GET RUNNING CONTAINERS
+    # ------------------------------------------------
+
+    - name: Get running Docker containers
+      ansible.builtin.command: docker ps -q
+      register: running_containers
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    # ------------------------------------------------
+    # SCAN RUNNING CONTAINERS
+    # ------------------------------------------------
+
+    - name: Scan running Docker containers
+      ansible.builtin.shell: >
+        docker exec {{ item }} sh -c {{ brotli_scan_script | quote }}
+      loop: "{{ running_containers.stdout_lines | default([]) }}"
+      register: container_brotli_scan
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    # ------------------------------------------------
+    # DISPLAY CONTAINER RESULTS
+    # ------------------------------------------------
+
+    - name: Display Docker scan results
+      ansible.builtin.debug:
+        msg: |
+          ==========================================
+          HOST: {{ inventory_hostname }}
+          CONTAINER: {{ item.item }}
+          ==========================================
+          {{ item.stdout | default('No output') }}
+          {{ item.stderr | default('') }}
+      loop: "{{ container_brotli_scan.results | default([]) }}"
+      when: container_brotli_scan is not skipped
+
+    # ------------------------------------------------
+    # LIST STOPPED CONTAINERS
+    # ------------------------------------------------
+
+    - name: List stopped Docker containers
+      ansible.builtin.command: >
+        docker ps -a --filter status=exited --format {{ '{{' }}.Names{{ '}}' }}
+      register: stopped_containers
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    - name: Report stopped containers
+      ansible.builtin.debug:
+        msg: |
+          HOST: {{ inventory_hostname }}
+          STOPPED CONTAINERS NOT SCANNED:
+          {{ stopped_containers.stdout_lines | default([]) }}
+      when: docker_check.rc == 0
